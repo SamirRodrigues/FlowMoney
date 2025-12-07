@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Parcelable
 import android.provider.Settings
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -22,6 +23,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -78,7 +81,7 @@ private fun generateRandomPurchase(categories: List<Category>): Purchase {
     val randomMinutesAgo = Random.nextInt(0, 60 * 24)
     calendar.add(java.util.Calendar.MINUTE, -randomMinutesAgo)
 
-    val timestamp = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).format(calendar.time)
+    val timestamp = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(calendar.time)
 
     val category = getCategoryForEstablishment(randomEstablishment, categories)
 
@@ -104,6 +107,9 @@ fun FlowMoneyApp() {
 
     val context = LocalContext.current
     val prefs = remember { AppPreferences(context) }
+    var isFullAccessMode by remember { mutableStateOf(prefs.getFullAccessMode()) }
+    var showTestNotifications by remember { mutableStateOf(prefs.getShowTestNotifications()) }
+    var showDeleteOption by remember { mutableStateOf(prefs.getShowDeleteOption()) }
 
     var categories by remember { mutableStateOf(prefs.getCategories()) }
     var purchaseList by remember { mutableStateOf(prefs.getPurchases()) }
@@ -118,31 +124,34 @@ fun FlowMoneyApp() {
     var categoryToEdit by remember { mutableStateOf<Category?>(null) }
     var categoryToDelete by remember { mutableStateOf<Category?>(null) }
     var categoryForNewKeyword by remember { mutableStateOf<Category?>(null) }
+    var showAddPurchaseDialog by remember { mutableStateOf(false) }
 
     val onPurchaseClick: (Purchase) -> Unit = { purchase -> purchaseToEdit = purchase }
 
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
-        onResult = { isGranted -> if (isGranted) sendRandomPurchaseNotification(NotificationHelper(context)) }
+        onResult = { isGranted -> if (isGranted) sendRandomPurchaseNotification(NotificationHelper(context), isFullAccessMode) }
     )
 
-    val broadcastReceiver = remember {
+    val broadcastReceiver = remember(categories) {
         object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.action == PurchaseNotificationListener.ACTION_PURCHASE_NOTIFICATION) {
                     val value = intent.getStringExtra(PurchaseNotificationListener.EXTRA_VALUE) ?: ""
                     val establishment = intent.getStringExtra(PurchaseNotificationListener.EXTRA_ESTABLISHMENT) ?: ""
                     val timestamp = intent.getStringExtra(PurchaseNotificationListener.EXTRA_TIMESTAMP) ?: ""
+                    val isFullAccess = intent?.getBooleanExtra(PurchaseNotificationListener.EXTRA_IS_FULL_ACCESS, false) ?: false
                     val category = getCategoryForEstablishment(establishment, categories)
-                    purchaseList = purchaseList + Purchase(value, establishment, timestamp, category)
+                    purchaseList = purchaseList + Purchase(value, establishment, timestamp, category, isFullAccess)
+                    Log.d("FlowMoney", "Purchase added: $establishment - R$ $value")
                 }
             }
         }
     }
 
-    DisposableEffect(context) {
+    DisposableEffect(broadcastReceiver, context) {
         val filter = IntentFilter(PurchaseNotificationListener.ACTION_PURCHASE_NOTIFICATION)
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_NOT_EXPORTED else 0
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_EXPORTED else 0
         context.registerReceiver(broadcastReceiver, filter, flags)
         onDispose { context.unregisterReceiver(broadcastReceiver) }
     }
@@ -153,6 +162,19 @@ fun FlowMoneyApp() {
             purchaseList = purchaseList.map { p -> if (p.timestamp == updatedPurchase.timestamp && p.establishment == updatedPurchase.establishment) updatedPurchase else p }
             purchaseToEdit = null
         })
+    }
+
+    if (showAddPurchaseDialog) {
+        AddPurchaseDialog(
+            categories = categories.map { it.name },
+            onDismiss = { showAddPurchaseDialog = false },
+            onConfirm = { value, establishment, timestamp, categoryName ->
+                // mark as full-access if that mode is active
+                val isFullAccessForManual = isFullAccessMode
+                purchaseList = purchaseList + Purchase(value, establishment, timestamp, categoryName, isFullAccessForManual)
+                showAddPurchaseDialog = false
+            }
+        )
     }
 
     if (showAddCategoryDialog) {
@@ -274,20 +296,25 @@ fun FlowMoneyApp() {
                                             categoryName = selectedCategory!!,
                                             purchases = purchasesForDetails,
                                             onBackClick = { selectedCategory = null },
-                                            onPurchaseClick = onPurchaseClick
+                                            onPurchaseClick = onPurchaseClick,
+                                            isTestMode = isFullAccessMode,
+                                            showDeleteOption = showDeleteOption,
+                                            onDelete = { p -> purchaseList = purchaseList.filter { it != p } }
                                         )
                                     }
                                 }
                             }
 
-//                            Row(
-//                                modifier = Modifier.fillMaxWidth().padding(16.dp),
-//                                horizontalArrangement = Arrangement.SpaceAround
-//                            ) {
-//                                Button(onClick = { sendRandomPurchaseNotification(NotificationHelper(context)) }) { Text("Notificação") }
-//                                Button(onClick = { purchaseList = purchaseList + generateRandomPurchase(categories) }) { Text("Gerar Teste") }
-//                                Button(onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) { Text("Listener") }
-//                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                                horizontalArrangement = Arrangement.SpaceAround
+                            ) {
+                                Button(onClick = { showAddPurchaseDialog = true }) { Text("Adicionar Registro") }
+                                // Mostrar o botão de notificação somente quando a opção estiver habilitada
+                                if (showTestNotifications) {
+                                    Button(onClick = { sendRandomPurchaseNotification(NotificationHelper(context), false) }) { Text("Notificação") }
+                                }
+                            }
                         }
                     }
                     AppDestinations.ANALYTICS -> AnalyticsScreen(purchases = purchaseList)
@@ -300,7 +327,10 @@ fun FlowMoneyApp() {
                         onRemoveKeyword = { category, keyword ->
                             categories = categories.map { c -> if (c.name == category.name) c.copy(keywords = c.keywords.filter { it != keyword }) else c }
                         },
-                        prefs = prefs
+                        prefs = prefs,
+                        onTestModeChanged = { enabled -> isFullAccessMode = enabled },
+                        onShowTestNotificationsChanged = { enabled -> showTestNotifications = enabled },
+                        onShowDeleteOptionChanged = { enabled -> showDeleteOption = enabled }
                     )
                 }
             }
@@ -356,6 +386,41 @@ class AppPreferences(context: Context) {
     fun getSelectedApp(): String? {
         return preferences.getString("selected_app", null)
     }
+
+    // Full-access mode preference helpers (kept compatible with legacy key "test_mode")
+    fun saveFullAccessMode(enabled: Boolean) {
+        preferences.edit().putBoolean("full_access_mode", enabled).putBoolean("test_mode", enabled).apply()
+    }
+
+    fun getFullAccessMode(): Boolean {
+        return if (preferences.contains("full_access_mode")) {
+            preferences.getBoolean("full_access_mode", false)
+        } else {
+            // fallback to legacy key
+            preferences.getBoolean("test_mode", false)
+        }
+    }
+
+    // Separate permissions for test notifications and delete visibility
+    fun saveShowTestNotifications(enabled: Boolean) {
+        preferences.edit().putBoolean("show_test_notifications", enabled).apply()
+    }
+
+    fun getShowTestNotifications(): Boolean {
+        return preferences.getBoolean("show_test_notifications", false)
+    }
+
+    fun saveShowDeleteOption(enabled: Boolean) {
+        preferences.edit().putBoolean("show_delete_option", enabled).apply()
+    }
+
+    fun getShowDeleteOption(): Boolean {
+        return preferences.getBoolean("show_delete_option", false)
+    }
+
+    // legacy API kept for compatibility
+    fun saveTestMode(enabled: Boolean) { saveFullAccessMode(enabled) }
+    fun getTestMode(): Boolean { return getFullAccessMode() }
 }
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
@@ -466,13 +531,136 @@ fun EditPurchaseDialog(purchase: Purchase, categories: List<String>, onDismiss: 
     }, confirmButton = { Button(onClick = { onConfirm(purchase.copy(category = newCategory)) }, enabled = newCategory != purchase.category) { Text("Confirmar") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } })
 }
 
-private fun sendRandomPurchaseNotification(notificationHelper: NotificationHelper) {
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AddPurchaseDialog(
+    categories: List<String>,
+    onDismiss: () -> Unit,
+    onConfirm: (String, String, String, String) -> Unit
+) {
+    var value by remember { mutableStateOf("") }
+    var establishment by remember { mutableStateOf("") }
+    var date by remember { mutableStateOf("") }
+    var time by remember { mutableStateOf("") }
+    var selectedCategory by remember { mutableStateOf(if (categories.isNotEmpty()) categories[0] else "") }
+    var isDropdownExpanded by remember { mutableStateOf(false) }
+    
+    // Inicializar com data/hora atual
+    LaunchedEffect(Unit) {
+        val now = java.util.Date()
+        val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
+        val timeFormat = java.text.SimpleDateFormat("HH:mm", Locale.getDefault())
+        date = dateFormat.format(now)
+        time = timeFormat.format(now)
+    }
+    
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Adicionar Registro de Compra") },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                TextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    label = { Text("Valor (ex: 50.00)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                TextField(
+                    value = establishment,
+                    onValueChange = { establishment = it },
+                    label = { Text("Local/Estabelecimento") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    TextField(
+                        value = date,
+                        onValueChange = { date = it },
+                        label = { Text("Data (dd/MM/yyyy)") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextField(
+                        value = time,
+                        onValueChange = { time = it },
+                        label = { Text("Hora (HH:mm)") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                ExposedDropdownMenuBox(
+                    expanded = isDropdownExpanded,
+                    onExpandedChange = { isDropdownExpanded = !isDropdownExpanded },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    TextField(
+                        value = selectedCategory,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Categoria") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = isDropdownExpanded) },
+                        modifier = Modifier
+                            .menuAnchor()
+                            .fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = isDropdownExpanded,
+                        onDismissRequest = { isDropdownExpanded = false }
+                    ) {
+                        categories.forEach { category ->
+                            DropdownMenuItem(
+                                text = { Text(category) },
+                                onClick = {
+                                    selectedCategory = category
+                                    isDropdownExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (value.isNotBlank() && establishment.isNotBlank() && date.isNotBlank() && time.isNotBlank()) {
+                        val timestamp = "$date $time"
+                        onConfirm(value, establishment, timestamp, selectedCategory)
+                    }
+                },
+                enabled = value.isNotBlank() && establishment.isNotBlank() && date.isNotBlank() && time.isNotBlank()
+            ) {
+                Text("Adicionar")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancelar")
+            }
+        }
+    )
+}
+
+private fun sendRandomPurchaseNotification(notificationHelper: NotificationHelper, isFullAccess: Boolean) {
     val establishments = listOf("Padaria do Zé", "Supermercado Pão de Mel", "Posto Shell", "Farmácia Droga Raia", "Amazon.com.br", "Netflix", "Uber")
     val randomEstablishment = establishments.random()
     val randomValue = String.format("%.2f", 10 + (Random.nextDouble() * 200)).replace(",", ".")
-    val notificationText = "Compra de R$ $randomValue em $randomEstablishment."
+    var notificationText = "Compra de R$ $randomValue em $randomEstablishment."
     val titles = listOf("Compra Aprovada", "Pagamento Confirmado", "Nova Compra Realizada")
     val randomTitle = titles.random()
+    if (isFullAccess) {
+        // add a marker so the listener can detect that this notification was generated by full-access mode
+        notificationText = "$notificationText [FULL_ACCESS]"
+    }
     notificationHelper.showNotification(randomTitle, notificationText)
 }
 
@@ -508,34 +696,50 @@ fun CategorySummaryItem(category: String, count: Int, totalValue: Double, onClic
 }
 
 @Composable
-fun CategoryDetailScreen(categoryName: String, purchases: List<Purchase>, onBackClick: () -> Unit, onPurchaseClick: (Purchase) -> Unit) {
+fun CategoryDetailScreen(categoryName: String, purchases: List<Purchase>, onBackClick: () -> Unit, onPurchaseClick: (Purchase) -> Unit, isTestMode: Boolean, showDeleteOption: Boolean, onDelete: (Purchase) -> Unit) {
     Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(8.dp)) {
             IconButton(onClick = onBackClick) { Icon(Icons.Filled.ArrowBack, contentDescription = "Voltar", tint = MaterialTheme.colorScheme.onSurface) }
             Text(text = categoryName, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
         }
-        PurchaseLogScreen(purchases = purchases, onPurchaseClick = onPurchaseClick)
+        PurchaseLogScreen(purchases = purchases, onPurchaseClick = onPurchaseClick, isTestMode = isTestMode, showDeleteOption = showDeleteOption, onDelete = onDelete)
     }
 }
 
 @Composable
-fun PurchaseLogScreen(purchases: List<Purchase>, onPurchaseClick: (Purchase) -> Unit) {
+fun PurchaseLogScreen(purchases: List<Purchase>, onPurchaseClick: (Purchase) -> Unit, isTestMode: Boolean, showDeleteOption: Boolean, onDelete: (Purchase) -> Unit) {
     LazyColumn(modifier = Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(purchases.reversed()) { PurchaseItem(it, onClick = { onPurchaseClick(it) }) }
+        items(purchases.reversed()) { p -> PurchaseItem(p, onClick = { onPurchaseClick(p) }, showDelete = isTestMode && showDeleteOption, onDelete = { onDelete(p) }) }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PurchaseItem(purchase: Purchase, onClick: () -> Unit) {
-    Card(onClick = onClick, modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
+fun PurchaseItem(purchase: Purchase, onClick: () -> Unit, showDelete: Boolean = false, onDelete: (() -> Unit)? = null) {
+    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Row(
+            modifier = Modifier
+                .padding(16.dp)
+                .fillMaxWidth()
+                .clickable(enabled = !showDelete) { onClick() },
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f).clickable { onClick() }) {
                 Text(purchase.establishment, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
                 Text("Valor: R$ ${purchase.value}", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
                 Text(purchase.category, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
             }
-            Text(purchase.timestamp, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+            Text(
+                purchase.timestamp,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                modifier = Modifier.clickable { onClick() }
+            )
+            if (showDelete && onDelete != null) {
+                IconButton(onClick = { onDelete() }) {
+                    Icon(Icons.Filled.Delete, contentDescription = "Deletar", tint = MaterialTheme.colorScheme.error)
+                }
+            }
         }
     }
 }

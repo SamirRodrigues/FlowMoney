@@ -10,11 +10,12 @@ data class Purchase(
     val value: String,
     val establishment: String,
     val timestamp: String,
-    val category: String
+    val category: String,
+    val isFullAccess: Boolean = false
 ) : Parcelable {
     fun getYearAndMonth(): Pair<Int, Int>? {
         return try {
-            val format = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault())
+            val format = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault())
             val date = format.parse(timestamp)
             if (date != null) {
                 val calendar = java.util.Calendar.getInstance()

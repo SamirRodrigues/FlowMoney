@@ -1,9 +1,11 @@
 package com.example.flowmoney
 
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
+import android.provider.Settings
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,11 +29,13 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -42,6 +46,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -131,7 +136,10 @@ fun SettingsScreen(
     onDeleteCategory: (Category) -> Unit,
     onAddKeyword: (Category) -> Unit,
     onRemoveKeyword: (Category, String) -> Unit,
-    prefs: AppPreferences
+    prefs: AppPreferences,
+    onTestModeChanged: (Boolean) -> Unit,
+    onShowTestNotificationsChanged: (Boolean) -> Unit = {},
+    onShowDeleteOptionChanged: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
     val sortedCategories = remember(categories) {
@@ -141,6 +149,34 @@ fun SettingsScreen(
 
     var showAppSelection by remember { mutableStateOf(false) }
     var selectedApp by remember { mutableStateOf<AppInfo?>(null) }
+    var showPermissionHelpDialog by remember { mutableStateOf(false) }
+    var showTestModeDialog by remember { mutableStateOf(false) }
+    var isFullAccessMode by remember { mutableStateOf(prefs.getFullAccessMode()) }
+    var showTestNotifications by remember { mutableStateOf(prefs.getShowTestNotifications()) }
+    var showDeleteOption by remember { mutableStateOf(prefs.getShowDeleteOption()) }
+
+    if (showPermissionHelpDialog) {
+        AlertDialog(
+            onDismissRequest = { showPermissionHelpDialog = false },
+            title = { Text("Permissão de Acesso às Notificações") },
+            text = { Text("Para que o FlowMoney consiga ler suas notificações de compra, é necessário conceder permissão de acesso. Clique em 'Abrir Configurações' e ative o FlowMoney na lista.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                        showPermissionHelpDialog = false
+                    }
+                ) {
+                    Text("Abrir Configurações")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPermissionHelpDialog = false }) {
+                    Text("Agora não")
+                }
+            }
+        )
+    }
 
     LaunchedEffect(Unit) {
         val packageName = prefs.getSelectedApp()
@@ -174,7 +210,69 @@ fun SettingsScreen(
         )
     }
 
+    if (showTestModeDialog) {
+        AlertDialog(
+            onDismissRequest = { showTestModeDialog = false },
+            title = { Text("Permissão Total") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Text("Configure as opções de permissão total de forma independente:")
+                    
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                        Column {
+                            Text("Permissão Total Ativa", fontWeight = FontWeight.SemiBold)
+                            Text("Habilita as opções abaixo", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                        }
+                        androidx.compose.material3.Switch(checked = isFullAccessMode, onCheckedChange = { isFullAccessMode = it })
+                    }
+                    
+                    Divider()
+                    
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                        Column {
+                            Text("Botão de Notificação Teste", fontWeight = FontWeight.SemiBold)
+                            Text("Mostrar botão para enviar notificações", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                        }
+                        androidx.compose.material3.Switch(checked = showTestNotifications, onCheckedChange = { showTestNotifications = it }, enabled = isFullAccessMode)
+                    }
+                    
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                        Column {
+                            Text("Opção de Deletar Cards", fontWeight = FontWeight.SemiBold)
+                            Text("Permitir exclusão de registros", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                        }
+                        androidx.compose.material3.Switch(checked = showDeleteOption, onCheckedChange = { showDeleteOption = it }, enabled = isFullAccessMode)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    prefs.saveFullAccessMode(isFullAccessMode)
+                    prefs.saveShowTestNotifications(showTestNotifications)
+                    prefs.saveShowDeleteOption(showDeleteOption)
+                    onTestModeChanged(isFullAccessMode)
+                    onShowTestNotificationsChanged(showTestNotifications)
+                    onShowDeleteOptionChanged(showDeleteOption)
+                    showTestModeDialog = false
+                }) { Text("Salvar") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTestModeDialog = false }) { Text("Cancelar") }
+            }
+        )
+    }
+
     Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Configurações") },
+                actions = {
+                    IconButton(onClick = { showPermissionHelpDialog = true }) {
+                        Icon(Icons.Filled.Info, contentDescription = "Ajuda com permissões")
+                    }
+                }
+            )
+        },
         containerColor = MaterialTheme.colorScheme.background,
         floatingActionButton = {
             FloatingActionButton(
@@ -202,6 +300,17 @@ fun SettingsScreen(
             item {
                 AppSelectionCard(selectedApp = selectedApp) {
                     showAppSelection = true
+                }
+            }
+            item {
+                Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                    Row(modifier = Modifier.padding(12.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                        Column {
+                            Text("Permissão Total", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                            Text(if (isFullAccessMode) "Ativado" else "Desativado", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                        }
+                        Button(onClick = { showTestModeDialog = true }) { Text("Configurar") }
+                    }
                 }
             }
             item {
