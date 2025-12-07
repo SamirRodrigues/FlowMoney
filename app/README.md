@@ -74,6 +74,3 @@ Para testar o botão de notificação (gera uma notificação simulada): habilit
 
 ## Licença
 - Coloque aqui sua licença (por exemplo, MIT) se desejar.
-
----
-Se quiser, eu posso também adicionar instruções de *celebration* para testes automatizados ou um pequeno script de CI para montar o APK automaticamente. Quer que eu adicione algo mais ao README?
