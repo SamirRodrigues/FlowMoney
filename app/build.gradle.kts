@@ -53,6 +53,8 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material3.adaptive.navigation.suite)
     implementation("androidx.compose.material:material-icons-extended")
+    implementation("com.google.code.gson:gson:2.10.1")
+    implementation("com.google.accompanist:accompanist-drawablepainter:0.32.0")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

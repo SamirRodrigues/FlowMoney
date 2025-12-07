@@ -14,7 +14,6 @@ class PurchaseNotificationListener : NotificationListenerService() {
 
     private val TAG = "PurchaseListener"
 
-    // Static keyword map for the service. The UI will have the dynamic version.
     private val categoryKeywordMap = mapOf(
         "Alimentação" to listOf("Padaria", "Supermercado", "iFood"),
         "Assinaturas" to listOf("Netflix", "Spotify", "Disney+"),
@@ -36,24 +35,31 @@ class PurchaseNotificationListener : NotificationListenerService() {
         val purchaseKeywords = listOf("compra", "pagamento", "realizada")
 
         if (purchaseKeywords.any { title.contains(it, ignoreCase = true) } && text != null) {
-            val pattern = Pattern.compile("""Compra de R\$ (.*) em (.*)\.""")
+            val pattern = Pattern.compile("Compra de R\\$\\s?([\\d,.]+)\\s+em\\s+([^.]*)\\.?")
             val matcher = pattern.matcher(text)
 
             if (matcher.find()) {
                 val value = matcher.group(1)
                 val establishment = matcher.group(2)
-                val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                val category = getCategoryForEstablishment(establishment)
 
-                Log.d(TAG, "Purchase Detected!")
+                if (value != null && establishment != null) {
+                    val timestamp = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).format(Date())
+                    val category = getCategoryForEstablishment(establishment)
 
-                val intent = Intent(ACTION_PURCHASE_NOTIFICATION)
-                intent.setPackage(packageName)
-                intent.putExtra(EXTRA_VALUE, value)
-                intent.putExtra(EXTRA_ESTABLISHMENT, establishment)
-                intent.putExtra(EXTRA_TIMESTAMP, timestamp)
-                intent.putExtra(EXTRA_CATEGORY, category)
-                sendBroadcast(intent)
+                    Log.d(TAG, "Purchase Detected! Value: $value, Establishment: $establishment")
+
+                    val intent = Intent(ACTION_PURCHASE_NOTIFICATION)
+                    intent.setPackage(packageName)
+                    intent.putExtra(EXTRA_VALUE, value)
+                    intent.putExtra(EXTRA_ESTABLISHMENT, establishment)
+                    intent.putExtra(EXTRA_TIMESTAMP, timestamp)
+                    intent.putExtra(EXTRA_CATEGORY, category)
+                    sendBroadcast(intent)
+                } else {
+                    Log.e(TAG, "Regex matched but groups are null.")
+                }
+            } else {
+                 Log.d(TAG, "Regex did not match for text: '$text'")
             }
         }
     }

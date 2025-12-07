@@ -7,17 +7,21 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
+import android.os.Parcelable
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -27,18 +31,22 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.tooling.preview.PreviewScreenSizes
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.flowmoney.ui.theme.FlowMoneyTheme
-import com.example.flowmoney.ui.theme.Typography
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.launch
+import kotlinx.parcelize.Parcelize
+import java.text.DateFormatSymbols
+import java.util.Locale
 import kotlin.random.Random
 
 class MainActivity : ComponentActivity() {
@@ -54,7 +62,27 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-data class Category(val name: String, val keywords: List<String>)
+@Parcelize
+data class Category(val name: String, val keywords: List<String>) : Parcelable
+
+private fun generateRandomPurchase(categories: List<Category>): Purchase {
+    val establishments = listOf("Padaria do Zé", "Supermercado Pão de Mel", "Posto Shell", "Farmácia Droga Raia", "Amazon.com.br", "Netflix", "Uber", "Spotify", "Disney+")
+    val randomEstablishment = establishments.random()
+    val randomValue = String.format(Locale.US, "%.2f", 10 + (Random.nextDouble() * 200))
+
+    // Generate random timestamp within the last year
+    val calendar = java.util.Calendar.getInstance()
+    val randomDaysAgo = Random.nextInt(0, 365)
+    calendar.add(java.util.Calendar.DAY_OF_YEAR, -randomDaysAgo)
+    val randomMinutesAgo = Random.nextInt(0, 60 * 24)
+    calendar.add(java.util.Calendar.MINUTE, -randomMinutesAgo)
+
+    val timestamp = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).format(calendar.time)
+
+    val category = getCategoryForEstablishment(randomEstablishment, categories)
+
+    return Purchase(randomValue, randomEstablishment, timestamp, category)
+}
 
 private fun getCategoryForEstablishment(establishment: String, categories: List<Category>): String {
     for (category in categories) {
@@ -65,26 +93,22 @@ private fun getCategoryForEstablishment(establishment: String, categories: List<
     return "Outros"
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @PreviewScreenSizes
 @Composable
 fun FlowMoneyApp() {
     var currentDestination by rememberSaveable { mutableStateOf(AppDestinations.HOME) }
     var selectedCategory by rememberSaveable { mutableStateOf<String?>(null) }
     var purchaseToEdit by remember { mutableStateOf<Purchase?>(null) }
-    var categories by remember {
-        mutableStateOf(listOf(
-            Category("Alimentação", listOf("Padaria", "Supermercado", "iFood")),
-            Category("Assinaturas", listOf("Netflix", "Spotify", "Disney+")),
-            Category("Gasolina", listOf("Posto")),
-            Category("Saúde", listOf("Farmácia", "Droga")),
-            Category("Compras", listOf("Amazon", "Mercado Livre")),
-            Category("Outros", emptyList())
-        ))
-    }
+
     val context = LocalContext.current
-    val notificationHelper = NotificationHelper(context)
-    var purchaseList by remember { mutableStateOf(listOf<Purchase>()) }
+    val prefs = remember { AppPreferences(context) }
+
+    var categories by remember { mutableStateOf(prefs.getCategories()) }
+    var purchaseList by remember { mutableStateOf(prefs.getPurchases()) }
+
+    LaunchedEffect(categories) { prefs.saveCategories(categories) }
+    LaunchedEffect(purchaseList) { prefs.savePurchases(purchaseList) }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -94,15 +118,11 @@ fun FlowMoneyApp() {
     var categoryToDelete by remember { mutableStateOf<Category?>(null) }
     var categoryForNewKeyword by remember { mutableStateOf<Category?>(null) }
 
-    LaunchedEffect(currentDestination) {
-        if (currentDestination != AppDestinations.HOME) selectedCategory = null
-    }
-
     val onPurchaseClick: (Purchase) -> Unit = { purchase -> purchaseToEdit = purchase }
 
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
-        onResult = { isGranted -> if (isGranted) sendRandomPurchaseNotification(notificationHelper) }
+        onResult = { isGranted -> if (isGranted) sendRandomPurchaseNotification(NotificationHelper(context)) }
     )
 
     val broadcastReceiver = remember {
@@ -182,51 +202,229 @@ fun FlowMoneyApp() {
             Column(modifier = Modifier.padding(it).fillMaxSize()) {
                 when (currentDestination) {
                     AppDestinations.HOME -> {
+                        val purchasesByYearMonth = remember(purchaseList) {
+                            purchaseList.mapNotNull { p -> p.getYearAndMonth()?.let { ym -> ym to p } }
+                                .groupBy({ it.first }, { it.second })
+                        }
+
+                        val sortedYearMonths = remember(purchasesByYearMonth) {
+                            val existingYearMonths = purchasesByYearMonth.keys.toMutableSet()
+                            val currentCalendar = java.util.Calendar.getInstance()
+                            val currentYearMonth = currentCalendar.get(java.util.Calendar.YEAR) to (currentCalendar.get(java.util.Calendar.MONTH) + 1)
+                            existingYearMonths.add(currentYearMonth)
+                            existingYearMonths.sortedWith(compareBy({ it.first }, { it.second }))
+                        }
+
+                        val currentCalendar = java.util.Calendar.getInstance()
+                        val currentYearMonth = currentCalendar.get(java.util.Calendar.YEAR) to (currentCalendar.get(java.util.Calendar.MONTH) + 1)
+
+                        val initialPage = remember(sortedYearMonths, currentYearMonth) {
+                            val index = sortedYearMonths.indexOf(currentYearMonth)
+                            if (index != -1) index else sortedYearMonths.size - 1
+                        }
+
+                        val pagerState = rememberPagerState(initialPage = initialPage) {
+                            sortedYearMonths.size
+                        }
+
+                        LaunchedEffect(pagerState.currentPage) {
+                            if (selectedCategory != null) {
+                                selectedCategory = null
+                            }
+                        }
+
                         Column(modifier = Modifier.fillMaxSize()) {
-                            val totalValue = purchaseList.sumOf { p -> p.value.toDoubleOrNull() ?: 0.0 }
+                            val (year, month) = sortedYearMonths[pagerState.currentPage]
+                            val monthlyPurchases = purchasesByYearMonth[year to month] ?: emptyList()
+                            val totalValue = monthlyPurchases.sumOf { p -> p.value.toDoubleOrNull() ?: 0.0 }
+                            val monthName = DateFormatSymbols(Locale("pt", "BR")).months[month - 1]
+
                             TotalSummary(total = totalValue)
-                            Box(modifier = Modifier.weight(1f)) {
-                                if (selectedCategory == null) SummaryScreen(purchases = purchaseList) { cat -> selectedCategory = cat } else CategoryDetailScreen(categoryName = selectedCategory!!, purchases = purchaseList.filter { p -> p.category == selectedCategory }, onBackClick = { selectedCategory = null }, onPurchaseClick = onPurchaseClick)
+
+                            Box(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "${monthName.replaceFirstChar { it.uppercase() }} de $year",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
                             }
-                            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceAround) {
-                                Button(onClick = { sendRandomPurchaseNotification(notificationHelper) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)) { Text("Send Notification") }
-                                Button(onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) { Text("Enable Listener") }
+
+                            HorizontalPager(
+                                state = pagerState,
+                                modifier = Modifier.weight(1f).fillMaxWidth()
+                            ) { pageIndex ->
+                                val (pageYear, pageMonth) = sortedYearMonths[pageIndex]
+                                val pagePurchases = purchasesByYearMonth[pageYear to pageMonth] ?: emptyList()
+
+                                if (pagePurchases.isEmpty()) {
+                                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                        Text("Nenhuma compra registrada neste mês.", color = MaterialTheme.colorScheme.onSurface)
+                                    }
+                                } else {
+                                    val purchasesForDetails = pagePurchases.filter { p -> p.category == selectedCategory }
+                                    if (selectedCategory == null) {
+                                        SummaryScreen(purchases = pagePurchases) { cat -> selectedCategory = cat }
+                                    } else {
+                                        CategoryDetailScreen(
+                                            categoryName = selectedCategory!!,
+                                            purchases = purchasesForDetails,
+                                            onBackClick = { selectedCategory = null },
+                                            onPurchaseClick = onPurchaseClick
+                                        )
+                                    }
+                                }
                             }
+
+//                            Row(
+//                                modifier = Modifier.fillMaxWidth().padding(16.dp),
+//                                horizontalArrangement = Arrangement.SpaceAround
+//                            ) {
+//                                Button(onClick = { sendRandomPurchaseNotification(NotificationHelper(context)) }) { Text("Notificação") }
+//                                Button(onClick = { purchaseList = purchaseList + generateRandomPurchase(categories) }) { Text("Gerar Teste") }
+//                                Button(onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) { Text("Listener") }
+//                            }
                         }
                     }
                     AppDestinations.ANALYTICS -> AnalyticsScreen(purchases = purchaseList)
-                    AppDestinations.SETTINGS -> SettingsScreen(categories = categories, onAddCategory = { showAddCategoryDialog = true }, onEditCategory = { cat -> categoryToEdit = cat }, onDeleteCategory = { cat -> categoryToDelete = cat }, onAddKeyword = { cat -> categoryForNewKeyword = cat }, onRemoveKeyword = { category, keyword ->
-                        categories = categories.map { c -> if (c.name == category.name) c.copy(keywords = c.keywords.filter { it != keyword }) else c }
-                    })
+                    AppDestinations.SETTINGS -> SettingsScreen(
+                        categories = categories,
+                        onAddCategory = { showAddCategoryDialog = true },
+                        onEditCategory = { cat -> categoryToEdit = cat },
+                        onDeleteCategory = { cat -> categoryToDelete = cat },
+                        onAddKeyword = { cat -> categoryForNewKeyword = cat },
+                        onRemoveKeyword = { category, keyword ->
+                            categories = categories.map { c -> if (c.name == category.name) c.copy(keywords = c.keywords.filter { it != keyword }) else c }
+                        },
+                        prefs = prefs
+                    )
                 }
             }
         }
     }
 }
 
+class AppPreferences(context: Context) {
+    private val preferences = context.getSharedPreferences("flow_money_prefs", Context.MODE_PRIVATE)
+    private val gson = Gson()
+
+    fun savePurchases(purchases: List<Purchase>) {
+        val json = gson.toJson(purchases)
+        preferences.edit().putString("purchases", json).apply()
+    }
+
+    fun getPurchases(): List<Purchase> {
+        val json = preferences.getString("purchases", null)
+        return if (json != null) {
+            val type = object : TypeToken<List<Purchase>>() {}.type
+            gson.fromJson(json, type)
+        } else {
+            emptyList()
+        }
+    }
+
+    fun saveCategories(categories: List<Category>) {
+        val json = gson.toJson(categories)
+        preferences.edit().putString("categories", json).apply()
+    }
+
+    fun getCategories(): List<Category> {
+        val json = preferences.getString("categories", null)
+        return if (json != null) {
+            val type = object : TypeToken<List<Category>>() {}.type
+            gson.fromJson(json, type)
+        } else {
+            listOf(
+                Category("Alimentação", listOf("Padaria", "Supermercado", "iFood")),
+                Category("Assinaturas", listOf("Netflix", "Spotify", "Disney+")),
+                Category("Gasolina", listOf("Posto")),
+                Category("Saúde", listOf("Farmácia", "Droga")),
+                Category("Compras", listOf("Amazon", "Mercado Livre")),
+                Category("Outros", emptyList())
+            )
+        }
+    }
+
+    fun saveSelectedApp(packageName: String) {
+        preferences.edit().putString("selected_app", packageName).apply()
+    }
+
+    fun getSelectedApp(): String? {
+        return preferences.getString("selected_app", null)
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun AnalyticsScreen(purchases: List<Purchase>) {
-    val spendingByCategory = purchases.groupBy { it.category }.mapValues { entry -> entry.value.sumOf { it.value.toDoubleOrNull() ?: 0.0 } }
-    val totalSpending = spendingByCategory.values.sum()
-    val chartColors = listOf(Color(0xFF6200EE), Color(0xFF03DAC5), Color(0xFF00, 0x85, 0x77), Color(0xFFD0, 0x00, 0x85), Color(0xFF37, 0x00, 0xB3), Color(0xFF01, 0x87, 0x86))
+    val purchasesByYearMonth = purchases
+        .mapNotNull { p -> p.getYearAndMonth()?.let { ym -> ym to p } }
+        .groupBy({ it.first }, { it.second })
 
-    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item { Text("Análise de Gastos", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) }
-        if (totalSpending == 0.0) {
-            item { Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) { Text("Nenhuma compra registrada para análise.", color = MaterialTheme.colorScheme.onSurface) } }
-        } else {
-            item { TotalSummary(total = totalSpending) }
-            spendingByCategory.entries.sortedByDescending { it.value }.forEachIndexed { index, (category, amount) ->
-                item {
-                    val percentage = if (totalSpending > 0) (amount / totalSpending).toFloat() else 0f
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Text(text = "$category (${String.format("%.1f%%", percentage * 100)})", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
-                            Text(String.format("R$ %.2f", amount), color = MaterialTheme.colorScheme.onSurface)
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(modifier = Modifier.fillMaxWidth().height(24.dp).background(MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(4.dp))) {
-                            Box(modifier = Modifier.fillMaxWidth(percentage).height(24.dp).background(chartColors[index % chartColors.size], shape = RoundedCornerShape(4.dp)))
+    val sortedYearMonths = purchasesByYearMonth.keys.sortedWith(compareBy({ it.first }, { it.second }))
+
+    if (sortedYearMonths.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("Nenhuma compra registrada para análise.", color = MaterialTheme.colorScheme.onSurface, textAlign = TextAlign.Center)
+        }
+        return
+    }
+
+    val pagerState = rememberPagerState(initialPage = sortedYearMonths.size - 1) {
+        sortedYearMonths.size
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        val currentYearMonth = sortedYearMonths[pagerState.currentPage]
+        val (year, month) = currentYearMonth
+        val monthName = DateFormatSymbols(Locale("pt", "BR")).months[month - 1]
+
+        Box(modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp), contentAlignment = Alignment.Center) {
+            Text(
+                text = "${monthName.replaceFirstChar { it.uppercase() }} de $year",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize()
+        ) { pageIndex ->
+            val (pageYear, pageMonth) = sortedYearMonths[pageIndex]
+            val filteredPurchases = purchasesByYearMonth[pageYear to pageMonth] ?: emptyList()
+            val spendingByCategory = filteredPurchases.groupBy { it.category }.mapValues { entry -> entry.value.sumOf { it.value.toDoubleOrNull() ?: 0.0 } }
+            val totalSpending = spendingByCategory.values.sum()
+            val chartColors = listOf(Color(0xFFF9A825), Color(0xFFFBC02D), Color(0xFFFFD54F), Color(0xFFFFE082), Color(0xFFFFECB3), Color(0xFFFFF8E1))
+
+            if (filteredPurchases.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("Nenhuma compra neste mês.", color = MaterialTheme.colorScheme.onSurface)
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    item { TotalSummary(total = totalSpending) }
+                    spendingByCategory.entries.sortedByDescending { it.value }.forEachIndexed { index, (category, amount) ->
+                        item {
+                            val percentage = if (totalSpending > 0) (amount / totalSpending).toFloat() else 0f
+                            Column {
+                                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(text = "$category (${String.format("%.1f%%", percentage * 100)})", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                                    Text(String.format("R$ %.2f", amount), color = MaterialTheme.colorScheme.onSurface)
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Box(modifier = Modifier.fillMaxWidth().height(24.dp).background(MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(4.dp))) {
+                                    Box(modifier = Modifier.fillMaxWidth(percentage).height(24.dp).background(chartColors[index % chartColors.size], shape = RoundedCornerShape(4.dp)))
+                                }
+                            }
                         }
                     }
                 }
@@ -279,8 +477,12 @@ private fun sendRandomPurchaseNotification(notificationHelper: NotificationHelpe
 
 @Composable
 fun SummaryScreen(purchases: List<Purchase>, onCategoryClick: (String) -> Unit) {
+    val groupedPurchases = purchases.groupBy { it.category }
+    val (outros, otherCategories) = groupedPurchases.entries.partition { it.key == "Outros" }
+    val sortedCategories = otherCategories.sortedBy { it.key } + outros
+
     LazyColumn(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        purchases.groupBy { it.category }.entries.sortedByDescending { entry -> entry.value.sumOf { it.value.toDoubleOrNull() ?: 0.0 } }.forEach { (category, purchaseList) ->
+        sortedCategories.forEach { (category, purchaseList) ->
             item {
                 val totalValue = purchaseList.sumOf { it.value.toDoubleOrNull() ?: 0.0 }
                 CategorySummaryItem(category, purchaseList.size, totalValue, onClick = { onCategoryClick(category) })
@@ -289,53 +491,7 @@ fun SummaryScreen(purchases: List<Purchase>, onCategoryClick: (String) -> Unit) 
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-fun SettingsScreen(categories: List<Category>, onAddCategory: () -> Unit, onEditCategory: (Category) -> Unit, onDeleteCategory: (Category) -> Unit, onAddKeyword: (Category) -> Unit, onRemoveKeyword: (Category, String) -> Unit) {
-    Scaffold(containerColor = MaterialTheme.colorScheme.background, floatingActionButton = { FloatingActionButton(onClick = onAddCategory, containerColor = MaterialTheme.colorScheme.primary) { Icon(Icons.Filled.Add, "Adicionar Categoria") } }) {
-        LazyColumn(modifier = Modifier.padding(it).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            item { Text("Gerenciar Categorias e Palavras-Chave", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) }
-            items(categories) {
-                category ->
-                var isExpanded by remember { mutableStateOf(false) }
-                Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(category.name, modifier = Modifier.weight(1f), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                            if (category.name != "Outros") {
-                                IconButton(onClick = { onEditCategory(category) }) { Icon(Icons.Filled.Edit, "Editar Nome", tint = MaterialTheme.colorScheme.onSurface) }
-                                IconButton(onClick = { onDeleteCategory(category) }) { Icon(Icons.Filled.Delete, "Excluir Categoria", tint = MaterialTheme.colorScheme.onSurface) }
-                            }
-                            IconButton(onClick = { isExpanded = !isExpanded }) {
-                                Icon(if (isExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = if (isExpanded) "Recolher" else "Expandir", tint = MaterialTheme.colorScheme.onSurface)
-                            }
-                        }
-                        if (isExpanded) {
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text("Palavras-chave:", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
-                            Spacer(modifier = Modifier.height(8.dp))
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                category.keywords.forEach { keyword ->
-                                    InputChip(selected = false, onClick = {}, label = { Text(keyword) }, trailingIcon = { Icon(Icons.Filled.Close, contentDescription = "Remover", modifier = Modifier.size(18.dp).clickable { onRemoveKeyword(category, keyword) }) })
-                                }
-                                if (category.name != "Outros") {
-                                    Button(onClick = { onAddKeyword(category) }, modifier = Modifier.height(32.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Adicionar") }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun CategoryEditDialog(initialValue: String = "", title: String, label: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
-    var text by remember { mutableStateOf(initialValue) }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text(title) }, text = { TextField(value = text, onValueChange = { text = it }, label = { Text(label) }, singleLine = true) }, confirmButton = { Button(onClick = { onConfirm(text) }) { Text("Confirmar") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } })
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
