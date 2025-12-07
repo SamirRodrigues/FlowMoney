@@ -1,83 +1,55 @@
 package com.example.flowmoney
 
 import android.app.Notification
+import android.content.Context
 import android.content.Intent
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
-import android.util.Log
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.regex.Pattern
 
 class PurchaseNotificationListener : NotificationListenerService() {
 
-    private val TAG = "PurchaseListener"
-
-    private val categoryKeywordMap = mapOf(
-        "Alimentação" to listOf("Padaria", "Supermercado", "iFood"),
-        "Assinaturas" to listOf("Netflix", "Spotify", "Disney+"),
-        "Gasolina" to listOf("Posto"),
-        "Saúde" to listOf("Farmácia", "Droga"),
-        "Compras" to listOf("Amazon", "Mercado Livre")
-    )
-
-    override fun onNotificationPosted(sbn: StatusBarNotification?) {
-        super.onNotificationPosted(sbn)
-
-        val notification = sbn?.notification ?: return
-        val extras = notification.extras
-        val title = extras.getString(Notification.EXTRA_TITLE) ?: ""
-        val text = extras.getString(Notification.EXTRA_TEXT)?.toString()
-
-        Log.d(TAG, "Notification received: Title='$title', Text='$text'")
-
-        val purchaseKeywords = listOf("compra", "pagamento", "realizada")
-
-        if (purchaseKeywords.any { title.contains(it, ignoreCase = true) } && text != null) {
-            val pattern = Pattern.compile("Compra de R\\$\\s?([\\d,.]+)\\s+em\\s+([^.]*)\\.?")
-            val matcher = pattern.matcher(text)
-
-            if (matcher.find()) {
-                val value = matcher.group(1)
-                val establishment = matcher.group(2)
-
-                if (value != null && establishment != null) {
-                    val timestamp = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).format(Date())
-                    val category = getCategoryForEstablishment(establishment)
-
-                    Log.d(TAG, "Purchase Detected! Value: $value, Establishment: $establishment")
-
-                    val intent = Intent(ACTION_PURCHASE_NOTIFICATION)
-                    intent.setPackage(packageName)
-                    intent.putExtra(EXTRA_VALUE, value)
-                    intent.putExtra(EXTRA_ESTABLISHMENT, establishment)
-                    intent.putExtra(EXTRA_TIMESTAMP, timestamp)
-                    intent.putExtra(EXTRA_CATEGORY, category)
-                    sendBroadcast(intent)
-                } else {
-                    Log.e(TAG, "Regex matched but groups are null.")
-                }
-            } else {
-                 Log.d(TAG, "Regex did not match for text: '$text'")
-            }
-        }
-    }
-
-    private fun getCategoryForEstablishment(establishment: String): String {
-        for ((category, keywords) in categoryKeywordMap) {
-            if (keywords.any { establishment.contains(it, ignoreCase = true) }) {
-                return category
-            }
-        }
-        return "Outros"
-    }
-
     companion object {
-        const val ACTION_PURCHASE_NOTIFICATION = "com.example.flowmoney.PURCHASE_NOTIFICATION"
+        const val ACTION_PURCHASE_NOTIFICATION = "com.example.flowmoney.ACTION_PURCHASE_NOTIFICATION"
         const val EXTRA_VALUE = "extra_value"
         const val EXTRA_ESTABLISHMENT = "extra_establishment"
         const val EXTRA_TIMESTAMP = "extra_timestamp"
-        const val EXTRA_CATEGORY = "extra_category"
+    }
+
+    override fun onNotificationPosted(sbn: StatusBarNotification) {
+        val prefs = AppPreferences(applicationContext)
+        val selectedApp = prefs.getSelectedApp()
+
+        if (sbn.packageName == selectedApp) {
+            val notification = sbn.notification
+            val title = notification.extras.getString(Notification.EXTRA_TITLE) ?: ""
+            val text = notification.extras.getString(Notification.EXTRA_TEXT) ?: ""
+
+            val purchaseDetails = extractPurchaseDetails(text)
+
+            if (purchaseDetails != null) {
+                val (value, establishment) = purchaseDetails
+                val timestamp = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).format(Date(sbn.postTime))
+
+                val intent = Intent(ACTION_PURCHASE_NOTIFICATION).apply {
+                    putExtra(EXTRA_VALUE, value)
+                    putExtra(EXTRA_ESTABLISHMENT, establishment)
+                    putExtra(EXTRA_TIMESTAMP, timestamp)
+                }
+                sendBroadcast(intent)
+            }
+        }
+    }
+
+    private fun extractPurchaseDetails(notificationText: String): Pair<String, String>? {
+        val regex = Regex("Compra de R\\$ (\\d+\\.\\d{2}) em (.*?)\\.?$", RegexOption.IGNORE_CASE)
+        val matchResult = regex.find(notificationText)
+        return if (matchResult != null && matchResult.groupValues.size == 3) {
+            matchResult.groupValues[1] to matchResult.groupValues[2]
+        } else {
+            null
+        }
     }
 }

@@ -56,6 +56,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             FlowMoneyTheme {
+                HandlePermissions(this)
                 FlowMoneyApp()
             }
         }
